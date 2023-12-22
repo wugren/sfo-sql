@@ -6,6 +6,7 @@ use sqlx::{Transaction, Connection, Executor, ConnectOptions};
 use log::LevelFilter;
 use sqlx::pool::PoolConnection;
 use sqlx::Execute;
+#[cfg(feature = "mysql")]
 use sqlx::mysql::MySqlSslMode;
 pub use sqlx::Row as SqlRow;
 pub use sqlx::Arguments as TSqlArguments;
@@ -29,7 +30,7 @@ pub type SqlTransaction<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
 #[cfg(feature = "sqlite")]
 pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, <sqlx::Sqlite as sqlx::database::HasArguments<'a>>::Arguments>;
 #[cfg(feature = "sqlite")]
-pub type RawSqlPool = sqlx::Sqlite;
+pub type RawSqlPool = sqlx::SqlitePool;
 #[cfg(feature = "sqlite")]
 pub type SqlArguments<'a> = <sqlx::Sqlite as sqlx::database::HasArguments<'a>>::Arguments;
 pub type SqlError = sqlx::Error;
