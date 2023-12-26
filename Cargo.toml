@@ -1,6 +1,6 @@
 [package]
 name = "sfo-sql"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 license-file = "LICENSE"
 repository = "https://github.com/wugren/sfo-sql.git"
@@ -11,7 +11,7 @@ description = "private sql library"
 [dependencies]
 async-std ={ version = "1.12", features = ["std"] }
 log = "0.4"
-sqlx = { version = "0.5", features = ["runtime-async-std-rustls", "macros", "all-types" ] }
+sqlx = { version = "0.7", features = ["runtime-async-std-rustls", "macros"] }
 async-trait = "0.1.60"
 
 [features]

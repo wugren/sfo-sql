@@ -90,14 +90,14 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
         {
             let pool_options = sqlx::mysql::MySqlPoolOptions::new()
                 .max_connections(max_connections)
-                .connect_timeout(Duration::from_secs(300))
+                .acquire_timeout(Duration::from_secs(300))
                 .min_connections(0)
                 .idle_timeout(Duration::from_secs(300));
             let mut options = sqlx::mysql::MySqlConnectOptions::from_str(uri).map_err(|e| {
                 EM::map(e, format!("[{} {}]", line!(), uri).as_str())
             })?;
-            options.log_slow_statements(LevelFilter::Error, Duration::from_secs(1));
-            options.log_statements(LevelFilter::Off);
+            options = options.log_slow_statements(LevelFilter::Error, Duration::from_secs(1));
+            options = options.log_statements(LevelFilter::Off);
             options = options.ssl_mode(MySqlSslMode::Disabled);
             let pool = pool_options.connect_with(options).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?;
             Ok(Self {
@@ -110,7 +110,7 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
         {
             let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
                 .max_connections(max_connections)
-                .connect_timeout(Duration::from_secs(300))
+                .acquire_timeout(Duration::from_secs(300))
                 .min_connections(0)
                 .idle_timeout(Duration::from_secs(300));
             let mut options = sqlx::sqlite::SqliteConnectOptions::from_str(uri).map_err(|e| {
@@ -123,7 +123,7 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
                 options = options.serialized(true);
             }
 
-            options.log_statements(LevelFilter::Off)
+            options = options.log_statements(LevelFilter::Off)
                 .log_slow_statements(LevelFilter::Off, Duration::from_secs(10));
             let pool = pool_options.connect_with(options).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?;
             Ok(Self {
@@ -179,7 +179,7 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<EM> {
                 options = options.serialized(true);
             }
 
-            options.log_statements(LevelFilter::Off)
+            options = options.log_statements(LevelFilter::Off)
                 .log_slow_statements(LevelFilter::Off, Duration::from_secs(10));
             options.connect().await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?
         };
