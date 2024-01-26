@@ -33,6 +33,9 @@ pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, <sqlx::Sqlite as sq
 pub type RawSqlPool = sqlx::SqlitePool;
 #[cfg(feature = "sqlite")]
 pub type SqlArguments<'a> = <sqlx::Sqlite as sqlx::database::HasArguments<'a>>::Arguments;
+#[cfg(feature = "sqlite")]
+pub type SqliteJournalMode = sqlx::sqlite::SqliteJournalMode;
+
 pub type SqlError = sqlx::Error;
 
 
@@ -84,7 +87,11 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
         Self { pool, uri: "".to_string(), _em: Default::default() }
     }
 
-    pub async fn open(uri: &str, max_connections: u32) -> Result<Self, EM::OutError> {
+    pub async fn open(uri: &str,
+                      max_connections: u32,
+                      #[cfg(feature = "sqlite")]
+                      journal_mode: Option<SqliteJournalMode>,
+    ) -> Result<Self, EM::OutError> {
         log::info!("open pool {} max_connections {}", uri, max_connections);
         #[cfg(feature = "mysql")]
         {
@@ -118,6 +125,12 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
             })?
                 .busy_timeout(Duration::from_secs(300))
                 .create_if_missing(true);
+            #[cfg(feature = "sqlite")]
+            {
+                if let Some(journal_mode) = journal_mode {
+                    options = options.journal_mode(journal_mode);
+                }
+            }
             #[cfg(target_os = "ios")]
             {
                 options = options.serialized(true);
