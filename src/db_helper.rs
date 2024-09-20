@@ -125,11 +125,8 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
             })?
                 .busy_timeout(Duration::from_secs(300))
                 .create_if_missing(true);
-            #[cfg(feature = "sqlite")]
-            {
-                if let Some(journal_mode) = journal_mode {
-                    options = options.journal_mode(journal_mode);
-                }
+            if let Some(journal_mode) = journal_mode {
+                options = options.journal_mode(journal_mode);
             }
             #[cfg(target_os = "ios")]
             {
@@ -290,41 +287,67 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<EM> {
         }
     }
 
-    #[cfg(feature = "mysql")]
     pub async fn is_column_exist(&mut self, table_name: &str, column_name: &str, db_name: Option<&str>) -> Result<bool, EM::OutError> {
-        let row = if db_name.is_none() {
-            let sql = "select count(*) as c from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?";
-            let row = self.query_one(sql_query(sql).bind(table_name).bind(column_name)).await?;
-            row
-        } else {
-            let sql = "select count(*) as c from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?";
-            let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(column_name)).await?;
-            row
-        };
-        let count: i32 = row.get("c");
-        if count == 0 {
-            Ok(false)
-        } else {
-            Ok(true)
+        #[cfg(feature = "mysql")]
+        {
+            let row = if db_name.is_none() {
+                let sql = "select count(*) as c from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?";
+                let row = self.query_one(sql_query(sql).bind(table_name).bind(column_name)).await?;
+                row
+            } else {
+                let sql = "select count(*) as c from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?";
+                let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(column_name)).await?;
+                row
+            };
+            let count: i32 = row.get("c");
+            if count == 0 {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let sql = r#"select * from sqlite_master where type='table' and tbl_name=?1 and sql like ?2"#;
+            let ret = self.query_one(sql_query(sql)
+                .bind(table_name).bind(format!("%{}%", column_name))).await;
+            if let Err(_) = &ret {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
         }
     }
 
-    #[cfg(feature = "mysql")]
     pub async fn is_index_exist(&mut self, table_name: &str, index_name: &str, db_name: Option<&str>) -> Result<bool, EM::OutError> {
-        let row = if db_name.is_none() {
-            let sql = "select count(*) as c from information_schema.statistics where table_schema = database() and table_name = ? and index_name = ?";
-            let row = self.query_one(sql_query(sql).bind(table_name).bind(index_name)).await?;
-            row
-        } else {
-            let sql = "select count(*) as c from information_schema.statistics where table_schema = ? and table_name = ? and index_name = ?";
-            let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(index_name)).await?;
-            row
-        };
-        let count: i32 = row.get("c");
-        if count == 0 {
-            Ok(false)
-        } else {
-            Ok(true)
+        #[cfg(feature = "mysql")]
+        {
+            let row = if db_name.is_none() {
+                let sql = "select count(*) as c from information_schema.statistics where table_schema = database() and table_name = ? and index_name = ?";
+                let row = self.query_one(sql_query(sql).bind(table_name).bind(index_name)).await?;
+                row
+            } else {
+                let sql = "select count(*) as c from information_schema.statistics where table_schema = ? and table_name = ? and index_name = ?";
+                let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(index_name)).await?;
+                row
+            };
+            let count: i32 = row.get("c");
+            if count == 0 {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
+        }
+        #[cfg(feature = "sqlite")]
+        {
+            let sql = r#"select * from sqlite_master where type='index' and tbl_name=?1 and name=?2"#;
+            let ret = self.query_one(sql_query(sql)
+                .bind(table_name).bind(index_name)).await;
+            if let Err(_) = &ret {
+                Ok(false)
+            } else {
+                Ok(true)
+            }
         }
     }
 }
