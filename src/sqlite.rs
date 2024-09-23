@@ -9,9 +9,9 @@ pub type SqlDB = sqlx::Sqlite;
 pub type SqlRawConnection = sqlx::SqliteConnection;
 pub type SqlRowObject = <sqlx::Sqlite as sqlx::Database>::Row;
 pub type SqlTransaction<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
-pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, sqlx::Sqlite::Arguments<'a>>;
+pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, <sqlx::Sqlite as sqlx::Database>::Arguments<'a>>;
 pub type RawSqlPool = sqlx::SqlitePool;
-pub type SqlArguments<'a> = sqlx::Sqlite::Arguments<'a>;
+pub type SqlArguments<'a> = <sqlx::Sqlite as sqlx::Database>::Arguments<'a>;
 pub type SqliteJournalMode = sqlx::sqlite::SqliteJournalMode;
 
 pub type SqlPool = crate::db_helper::SqlPool<sqlx::Sqlite, RawErrorToSqlError>;
