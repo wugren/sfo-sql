@@ -2,7 +2,6 @@ use std::str::FromStr;
 use std::time::Duration;
 use log::LevelFilter;
 use sqlx::ConnectOptions;
-use sqlx::mysql::MySqlSslMode;
 use crate::errors::SqlResult;
 pub use crate::db_helper::*;
 
