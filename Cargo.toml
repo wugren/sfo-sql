@@ -1,6 +1,6 @@
 [package]
 name = "sfo-sql"
-version = "0.2.3"
+version = "0.3.0"
 edition = "2021"
 license-file = "LICENSE"
 repository = "https://github.com/wugren/sfo-sql.git"
@@ -9,15 +9,17 @@ description = "private sql library"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-async-std ={ version = "1.12", features = ["std"] }
 log = "0.4"
-sqlx = { version = "0.7", features = ["runtime-async-std-rustls", "macros"] }
-async-trait = "0.1.60"
+sqlx = { version = "0.8", features = ["runtime-async-std-rustls", "macros"] }
+async-trait = "0.1.82"
+sfo-result = "0.2.4"
 
 [features]
-default = ["mysql"]
+default = ["mysql", "runtime-tokio"]
 mysql = ["sqlx/mysql"]
 sqlite = ["sqlx/sqlite"]
+runtime-async-std = ["sqlx/runtime-async-std", "sqlx/runtime-async-std-rustls"]
+runtime-tokio = ["sqlx/runtime-tokio", "sqlx/runtime-tokio-rustls"]
 
 [build-dependencies]
 syn = {version = "1.0", features = ["full"]}

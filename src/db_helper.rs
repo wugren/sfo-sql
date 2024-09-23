@@ -1,15 +1,10 @@
 use std::marker::PhantomData;
 use std::ops::Deref;
-use std::str::FromStr;
-use std::time::Duration;
-use sqlx::{Transaction, Connection, Executor, ConnectOptions};
-use log::LevelFilter;
+use sqlx::{Transaction, Connection, Executor, Database};
 use sqlx::pool::PoolConnection;
 use sqlx::Execute;
-#[cfg(feature = "mysql")]
-use sqlx::mysql::MySqlSslMode;
 pub use sqlx::Row as SqlRow;
-pub use sqlx::Arguments as TSqlArguments;
+use crate::errors::{sql_err, SqlError, SqlErrorCode};
 
 pub trait ErrorMap: 'static + Clone + Send + Sync {
     type OutError;
@@ -17,243 +12,169 @@ pub trait ErrorMap: 'static + Clone + Send + Sync {
     fn map(e: Self::InError, msg: &str) -> Self::OutError;
 }
 
-#[cfg(feature = "sqlite")]
-pub type SqlDB = sqlx::Sqlite;
-#[cfg(feature = "sqlite")]
-pub type SqlRawConnection = sqlx::SqliteConnection;
-#[cfg(feature = "sqlite")]
-pub type SqlResult = <sqlx::Sqlite as sqlx::Database>::QueryResult;
-#[cfg(feature = "sqlite")]
-pub type SqlRowObject = <sqlx::Sqlite as sqlx::Database>::Row;
-#[cfg(feature = "sqlite")]
-pub type SqlTransaction<'a> = sqlx::Transaction<'a, sqlx::Sqlite>;
-#[cfg(feature = "sqlite")]
-pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, <sqlx::Sqlite as sqlx::database::HasArguments<'a>>::Arguments>;
-#[cfg(feature = "sqlite")]
-pub type RawSqlPool = sqlx::SqlitePool;
-#[cfg(feature = "sqlite")]
-pub type SqlArguments<'a> = <sqlx::Sqlite as sqlx::database::HasArguments<'a>>::Arguments;
-#[cfg(feature = "sqlite")]
-pub type SqliteJournalMode = sqlx::sqlite::SqliteJournalMode;
+#[derive(Clone)]
+pub struct RawErrorToSqlError;
 
-pub type SqlError = sqlx::Error;
+impl ErrorMap for RawErrorToSqlError {
+    type OutError = SqlError;
+    type InError = sqlx::Error;
 
+    fn map(e: sqlx::Error, msg: &str) -> SqlError {
+        match e {
+            sqlx::Error::RowNotFound => {
+                // let msg = format!("not found, {}", msg);
+                sql_err!(SqlErrorCode::NotFound, "not found")
+            },
+            sqlx::Error::Database(ref err) => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
 
-#[cfg(feature = "mysql")]
-pub type SqlDB = sqlx::MySql;
-#[cfg(feature = "mysql")]
-pub type SqlRawConnection = sqlx::MySqlConnection;
-#[cfg(feature = "mysql")]
-pub type SqlResult = <sqlx::MySql as sqlx::Database>::QueryResult;
-#[cfg(feature = "mysql")]
-pub type SqlRowObject = <sqlx::MySql as sqlx::Database>::Row;
-#[cfg(feature = "mysql")]
-pub type SqlTransaction<'a> = sqlx::Transaction<'a, sqlx::MySql>;
-#[cfg(feature = "mysql")]
-pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::MySql, <sqlx::MySql as sqlx::database::HasArguments<'a>>::Arguments>;
-#[cfg(feature = "mysql")]
-pub type RawSqlPool = sqlx::MySqlPool;
-#[cfg(feature = "mysql")]
-pub type SqlArguments<'a> = <sqlx::MySql as sqlx::database::HasArguments<'a>>::Arguments;
+                if let Some(code) = err.code() {
+                    if code.to_string().as_str() == "23000" {
+                        return sql_err!(SqlErrorCode::AlreadyExists, "already exists");
+                    }
+                }
+                sql_err!(SqlErrorCode::Failed, "{}", msg)
+            }
+            _ => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
+                sql_err!(SqlErrorCode::Failed, "")
+            }
+        }
+    }
+}
+
 
 #[macro_export]
 macro_rules! sql_query {
     ($query:expr) => ({
-        sqlx::query!($query)
+        sfo_sql::query!($query)
     });
 
     ($query:expr, $($args:tt)*) => ({
-        sqlx::query!($query, $($args)*)
+        sfo_sql::query!($query, $($args)*)
     })
 }
 
-#[derive(Clone)]
-pub struct SqlPool<EM: ErrorMap<InError = sqlx::Error>> {
-    pool: RawSqlPool,
-    uri: String,
-    _em: PhantomData<EM>,
+pub struct SqlPool<DB: sqlx::Database, EM: ErrorMap<InError = sqlx::Error>>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+    pub(crate) pool: sqlx::pool::Pool<DB>,
+    pub(crate) uri: String,
+    pub(crate) _em: PhantomData<EM>,
 }
 
-impl <EM: ErrorMap<InError = sqlx::Error>> Deref for SqlPool<EM> {
-    type Target = RawSqlPool;
+impl<DB: sqlx::Database, EM: ErrorMap<InError = sqlx::Error>> Clone for SqlPool<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+
+    fn clone(&self) -> Self {
+        Self {
+            pool: self.pool.clone(),
+            uri: self.uri.clone(),
+            _em: self._em.clone()
+        }
+    }
+}
+
+impl <DB: sqlx::Database, EM: ErrorMap<InError = sqlx::Error>> Deref for SqlPool<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+    type Target = sqlx::pool::Pool<DB>;
 
     fn deref(&self) -> &Self::Target {
         &self.pool
     }
 }
 
-impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<EM> {
-    pub fn from_raw_pool(pool: RawSqlPool) -> Self {
+impl<DB: sqlx::Database, EM: 'static + ErrorMap<InError = sqlx::Error>> SqlPool<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+    pub fn from_raw_pool(pool: sqlx::pool::Pool<DB>) -> Self {
         Self { pool, uri: "".to_string(), _em: Default::default() }
     }
 
-    pub async fn open(uri: &str,
-                      max_connections: u32,
-                      #[cfg(feature = "sqlite")]
-                      journal_mode: Option<SqliteJournalMode>,
-    ) -> Result<Self, EM::OutError> {
-        log::info!("open pool {} max_connections {}", uri, max_connections);
-        #[cfg(feature = "mysql")]
-        {
-            let pool_options = sqlx::mysql::MySqlPoolOptions::new()
-                .max_connections(max_connections)
-                .acquire_timeout(Duration::from_secs(300))
-                .min_connections(0)
-                .idle_timeout(Duration::from_secs(300));
-            let mut options = sqlx::mysql::MySqlConnectOptions::from_str(uri).map_err(|e| {
-                EM::map(e, format!("[{} {}]", line!(), uri).as_str())
-            })?;
-            options = options.log_slow_statements(LevelFilter::Error, Duration::from_secs(1));
-            options = options.log_statements(LevelFilter::Off);
-            options = options.ssl_mode(MySqlSslMode::Disabled);
-            let pool = pool_options.connect_with(options).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?;
-            Ok(Self {
-                pool,
-                uri: uri.to_string(),
-                _em: Default::default()
-            })
-        }
-        #[cfg(feature = "sqlite")]
-        {
-            let pool_options = sqlx::sqlite::SqlitePoolOptions::new()
-                .max_connections(max_connections)
-                .acquire_timeout(Duration::from_secs(300))
-                .min_connections(0)
-                .idle_timeout(Duration::from_secs(300));
-            let mut options = sqlx::sqlite::SqliteConnectOptions::from_str(uri).map_err(|e| {
-                EM::map(e, format!("[{} {}]", line!(), uri).as_str())
-            })?
-                .busy_timeout(Duration::from_secs(300))
-                .create_if_missing(true);
-            if let Some(journal_mode) = journal_mode {
-                options = options.journal_mode(journal_mode);
-            }
-            #[cfg(target_os = "ios")]
-            {
-                options = options.serialized(true);
-            }
-
-            options = options.log_statements(LevelFilter::Off)
-                .log_slow_statements(LevelFilter::Off, Duration::from_secs(10));
-            let pool = pool_options.connect_with(options).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?;
-            Ok(Self {
-                pool,
-                uri: uri.to_string(),
-                _em: Default::default(),
-            })
-        }
-    }
-
-    pub async fn raw_pool(&self) -> RawSqlPool {
+    pub async fn raw_pool(&self) -> sqlx::pool::Pool<DB> {
         self.pool.clone()
     }
 
-    pub async fn get_conn(&self) -> Result<SqlConnection<EM>, EM::OutError> {
+    pub async fn get_conn(&self) -> Result<SqlConnection<DB, EM>, EM::OutError> {
         let conn = self.pool.acquire().await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), self.uri.as_str()).as_str()))?;
-        Ok(SqlConnection::<EM>::from(conn))
+        Ok(SqlConnection::<DB, EM>::from(conn))
     }
 }
 
-pub fn sql_query(sql: &str) -> SqlQuery<'_> {
-    sqlx::query::<SqlDB>(sql)
+pub fn sql_query<DB: Database>(sql: &str) -> sqlx::query::Query<DB, DB::Arguments<'_>>
+where for<'b> <DB as sqlx::Database>::Arguments<'b>: sqlx::IntoArguments<'b, DB>,{
+    sqlx::query(sql)
 }
 
-pub fn sql_query_with<'a>(sql: &'a str, arguments: SqlArguments<'a>) -> SqlQuery<'a> {
+pub fn sql_query_with<'a, DB: Database>(sql: &'a str, arguments: DB::Arguments<'a>) -> sqlx::query::Query<'a, DB, DB::Arguments<'a>>
+where for<'b> <DB as sqlx::Database>::Arguments<'b>: sqlx::IntoArguments<'b, DB>,{
     sqlx::query_with(sql, arguments)
 }
 
-pub enum SqlConnectionType {
-    PoolConn(PoolConnection<SqlDB>),
-    Conn(SqlRawConnection),
+pub enum SqlConnectionType<DB: Database>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,{
+    PoolConn(PoolConnection<DB>),
+    Conn(DB::Connection),
 }
-pub struct SqlConnection<EM: ErrorMap<InError = sqlx::Error>> {
-    conn: SqlConnectionType,
-    trans: Option<Transaction<'static, SqlDB>>,
-    _em: PhantomData<EM>,
+pub struct SqlConnection<DB: Database, EM: ErrorMap<InError = sqlx::Error>>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+    pub(crate) trans: Option<Transaction<'static, DB>>,
+    pub(crate) conn: SqlConnectionType<DB>,
+    pub(crate) _em: PhantomData<EM>,
 }
 
-impl <EM: 'static + ErrorMap<InError = SqlError>> From<sqlx::pool::PoolConnection<SqlDB>> for SqlConnection<EM> {
-    fn from(conn: sqlx::pool::PoolConnection<SqlDB>) -> Self {
+impl <DB: Database, EM: 'static + ErrorMap<InError = sqlx::Error>> From<sqlx::pool::PoolConnection<DB>> for SqlConnection<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
+    fn from(conn: sqlx::pool::PoolConnection<DB>) -> Self {
         Self { conn: SqlConnectionType::PoolConn(conn), _em: Default::default(), trans: None }
     }
 }
 
-impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<EM> {
-    pub async fn open(uri: &str) -> Result<Self, EM::OutError> {
-        #[cfg(feature = "sqlite")]
-        let conn = {
-            let mut options = sqlx::sqlite::SqliteConnectOptions::from_str(uri).map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?
-                .busy_timeout(Duration::from_secs(300));
-            #[cfg(target_os = "ios")]
-            {
-                options = options.serialized(true);
-            }
-
-            options = options.log_statements(LevelFilter::Off)
-                .log_slow_statements(LevelFilter::Off, Duration::from_secs(10));
-            options.connect().await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?
-        };
-        #[cfg(feature = "mysql")]
-        let conn = {
-            let mut options = sqlx::mysql::MySqlConnectOptions::from_str(uri).map_err(|e| {
-                EM::map(e, format!("[{} {}]", line!(), uri).as_str())
-            })?;
-            options = options.ssl_mode(MySqlSslMode::Disabled);
-            options.connect().await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), uri).as_str()))?
-        };
-
-        Ok(Self {
-            conn: SqlConnectionType::Conn(conn),
-            _em: Default::default(),
-            trans: None
-        })
-    }
-
-    pub async fn execute_sql(&mut self, query: SqlQuery<'_>) -> Result<SqlResult, EM::OutError> {
+impl<DB: Database, EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>,
+      for<'b> <DB as sqlx::Database>::Arguments<'b>: sqlx::IntoArguments<'b, DB>, {
+    pub async fn execute_sql<'a>(&mut self, query: sqlx::query::Query<'a, DB, <DB as Database>::Arguments<'a>>) -> Result<DB::QueryResult, EM::OutError>
+    {
         let sql = query.sql();
-        if self.trans.is_none() {
-            match &mut self.conn {
-                SqlConnectionType::PoolConn(conn) => {
-                    conn.execute(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                },
-                SqlConnectionType::Conn(conn) => {
-                    conn.execute(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                }
+        match &mut self.conn {
+            SqlConnectionType::PoolConn(conn) => {
+                conn.execute(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
+            },
+            SqlConnectionType::Conn(conn) => {
+                conn.execute(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
             }
-        } else {
-            self.trans.as_mut().unwrap().execute(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
         }
     }
 
-    pub async fn query_one(&mut self, query: SqlQuery<'_>) -> Result<SqlRowObject, EM::OutError> {
+    pub async fn query_one<'a>(&mut self, query: sqlx::query::Query<'a, DB, DB::Arguments<'a>>) -> Result<DB::Row, EM::OutError> {
         let sql = query.sql();
-        if self.trans.is_none() {
-            match &mut self.conn {
-                SqlConnectionType::PoolConn(conn) => {
-                    conn.fetch_one(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                },
-                SqlConnectionType::Conn(conn) => {
-                    conn.fetch_one(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                }
+        match &mut self.conn {
+            SqlConnectionType::PoolConn(conn) => {
+                conn.fetch_one(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
+            },
+            SqlConnectionType::Conn(conn) => {
+                conn.fetch_one(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
             }
-        } else {
-            self.trans.as_mut().unwrap().fetch_one(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
         }
     }
 
-    pub async fn query_all(&mut self, query: SqlQuery<'_>) -> Result<Vec<SqlRowObject>, EM::OutError> {
+    pub async fn query_all<'a>(&mut self, query: sqlx::query::Query<'a, DB, DB::Arguments<'a>>) -> Result<Vec<DB::Row>, EM::OutError> {
         let sql = query.sql();
-        if self.trans.is_none() {
-            match &mut self.conn {
-                SqlConnectionType::PoolConn(conn) => {
-                    conn.fetch_all(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                },
-                SqlConnectionType::Conn(conn) => {
-                    conn.fetch_all(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
-                }
+        match &mut self.conn {
+            SqlConnectionType::PoolConn(conn) => {
+                conn.fetch_all(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
+            },
+            SqlConnectionType::Conn(conn) => {
+                conn.fetch_all(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
             }
-        } else {
-            self.trans.as_mut().unwrap().fetch_all(query).await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), sql).as_str()))
         }
     }
 
@@ -273,7 +194,7 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<EM> {
 
     pub async fn rollback_transaction(&mut self) -> Result<(), EM::OutError> {
         if self.trans.is_none() {
-            return Ok(())
+            Ok(())
         } else {
             self.trans.take().unwrap().rollback().await.map_err(|e| EM::map(e, format!("[{} {}]", line!(), "rollback trans").as_str()))
         }
@@ -287,78 +208,13 @@ impl<EM: 'static + ErrorMap<InError = sqlx::Error>> SqlConnection<EM> {
         }
     }
 
-    pub async fn is_column_exist(&mut self, table_name: &str, column_name: &str, db_name: Option<&str>) -> Result<bool, EM::OutError> {
-        #[cfg(feature = "mysql")]
-        {
-            let row = if db_name.is_none() {
-                let sql = "select count(*) as c from information_schema.columns where table_schema = database() and table_name = ? and column_name = ?";
-                let row = self.query_one(sql_query(sql).bind(table_name).bind(column_name)).await?;
-                row
-            } else {
-                let sql = "select count(*) as c from information_schema.columns where table_schema = ? and table_name = ? and column_name = ?";
-                let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(column_name)).await?;
-                row
-            };
-            let count: i32 = row.get("c");
-            if count == 0 {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        }
-        #[cfg(feature = "sqlite")]
-        {
-            let sql = r#"select * from sqlite_master where type='table' and tbl_name=?1 and sql like ?2"#;
-            let ret = self.query_one(sql_query(sql)
-                .bind(table_name).bind(format!("%{}%", column_name))).await;
-            if let Err(_) = &ret {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        }
-    }
-
-    pub async fn is_index_exist(&mut self, table_name: &str, index_name: &str, db_name: Option<&str>) -> Result<bool, EM::OutError> {
-        #[cfg(feature = "mysql")]
-        {
-            let row = if db_name.is_none() {
-                let sql = "select count(*) as c from information_schema.statistics where table_schema = database() and table_name = ? and index_name = ?";
-                let row = self.query_one(sql_query(sql).bind(table_name).bind(index_name)).await?;
-                row
-            } else {
-                let sql = "select count(*) as c from information_schema.statistics where table_schema = ? and table_name = ? and index_name = ?";
-                let row = self.query_one(sql_query(sql).bind(db_name.unwrap()).bind(table_name).bind(index_name)).await?;
-                row
-            };
-            let count: i32 = row.get("c");
-            if count == 0 {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        }
-        #[cfg(feature = "sqlite")]
-        {
-            let sql = r#"select * from sqlite_master where type='index' and tbl_name=?1 and name=?2"#;
-            let ret = self.query_one(sql_query(sql)
-                .bind(table_name).bind(index_name)).await;
-            if let Err(_) = &ret {
-                Ok(false)
-            } else {
-                Ok(true)
-            }
-        }
-    }
 }
 
-impl<EM: ErrorMap<InError=sqlx::Error>> Drop for SqlConnection<EM> {
+impl<DB: sqlx::Database,EM: ErrorMap<InError=sqlx::Error>> Drop for SqlConnection<DB, EM>
+where for<'c> &'c mut DB::Connection: Executor<'c, Database = DB>, {
     fn drop(&mut self) {
         if self.trans.is_some() {
-            let trans = self.trans.take().unwrap();
-            async_std::task::block_on(async move {
-                let _ = trans.rollback().await;
-            });
+            let _ = self.trans.take();
         }
     }
 }
