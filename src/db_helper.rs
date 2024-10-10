@@ -12,48 +12,6 @@ pub trait ErrorMap: 'static + Clone + Send + Sync {
     fn map(e: Self::InError, msg: &str) -> Self::OutError;
 }
 
-#[derive(Clone)]
-pub struct RawErrorToSqlError;
-
-impl ErrorMap for RawErrorToSqlError {
-    type OutError = SqlError;
-    type InError = sqlx::Error;
-
-    fn map(e: sqlx::Error, msg: &str) -> SqlError {
-        match e {
-            sqlx::Error::RowNotFound => {
-                // let msg = format!("not found, {}", msg);
-                sql_err!(SqlErrorCode::NotFound, "not found")
-            },
-            sqlx::Error::Database(ref err) => {
-                let msg = format!("sql error: {:?} info:{}", e, msg);
-                if cfg!(test) {
-                    println!("{}", msg);
-                } else {
-                    log::error!("{}", msg);
-                }
-
-                if let Some(code) = err.code() {
-                    if code.to_string().as_str() == "23000" {
-                        return sql_err!(SqlErrorCode::AlreadyExists, "already exists");
-                    }
-                }
-                sql_err!(SqlErrorCode::Failed, "{}", msg)
-            }
-            _ => {
-                let msg = format!("sql error: {:?} info:{}", e, msg);
-                if cfg!(test) {
-                    println!("{}", msg);
-                } else {
-                    log::error!("{}", msg);
-                }
-                sql_err!(SqlErrorCode::Failed, "")
-            }
-        }
-    }
-}
-
-
 #[macro_export]
 macro_rules! sql_query {
     ($query:expr) => ({

@@ -2,7 +2,7 @@ use std::str::FromStr;
 use std::time::Duration;
 use log::LevelFilter;
 use sqlx::ConnectOptions;
-use crate::errors::SqlResult;
+use crate::errors::{sql_err, SqlError, SqlErrorCode, SqlResult};
 pub use crate::db_helper::*;
 
 pub type SqlDB = sqlx::Sqlite;
@@ -13,6 +13,47 @@ pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::Sqlite, <sqlx::Sqlite as sq
 pub type RawSqlPool = sqlx::SqlitePool;
 pub type SqlArguments<'a> = <sqlx::Sqlite as sqlx::Database>::Arguments<'a>;
 pub type SqliteJournalMode = sqlx::sqlite::SqliteJournalMode;
+
+#[derive(Clone)]
+pub struct RawErrorToSqlError;
+
+impl ErrorMap for RawErrorToSqlError {
+    type OutError = SqlError;
+    type InError = sqlx::Error;
+
+    fn map(e: sqlx::Error, msg: &str) -> SqlError {
+        match e {
+            sqlx::Error::RowNotFound => {
+                // let msg = format!("not found, {}", msg);
+                sql_err!(SqlErrorCode::NotFound, "not found")
+            },
+            sqlx::Error::Database(ref err) => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
+
+                if let Some(code) = err.code() {
+                    if code.to_string().as_str() == "1555" {
+                        return sql_err!(SqlErrorCode::AlreadyExists, "already exists");
+                    }
+                }
+                sql_err!(SqlErrorCode::Failed, "{}", msg)
+            }
+            _ => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
+                sql_err!(SqlErrorCode::Failed, "")
+            }
+        }
+    }
+}
 
 pub type SqlPool = crate::db_helper::SqlPool<sqlx::Sqlite, RawErrorToSqlError>;
 pub type SqlConnection = crate::db_helper::SqlConnection<sqlx::Sqlite, RawErrorToSqlError>;

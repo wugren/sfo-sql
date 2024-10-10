@@ -3,7 +3,7 @@ use std::time::Duration;
 use log::LevelFilter;
 use sqlx::ConnectOptions;
 use sqlx::mysql::MySqlSslMode;
-use crate::errors::SqlResult;
+use crate::errors::{sql_err, SqlError, SqlErrorCode, SqlResult};
 pub use crate::db_helper::*;
 
 pub type SqlDB = sqlx::MySql;
@@ -14,6 +14,46 @@ pub type SqlQuery<'a> = sqlx::query::Query<'a, sqlx::MySql, <sqlx::MySql as sqlx
 pub type RawSqlPool = sqlx::MySqlPool;
 pub type SqlArguments<'a> = <sqlx::MySql as sqlx::Database>::Arguments<'a>;
 
+#[derive(Clone)]
+pub struct RawErrorToSqlError;
+
+impl ErrorMap for RawErrorToSqlError {
+    type OutError = SqlError;
+    type InError = sqlx::Error;
+
+    fn map(e: sqlx::Error, msg: &str) -> SqlError {
+        match e {
+            sqlx::Error::RowNotFound => {
+                // let msg = format!("not found, {}", msg);
+                sql_err!(SqlErrorCode::NotFound, "not found")
+            },
+            sqlx::Error::Database(ref err) => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
+
+                if let Some(code) = err.code() {
+                    if code.to_string().as_str() == "23000" {
+                        return sql_err!(SqlErrorCode::AlreadyExists, "already exists");
+                    }
+                }
+                sql_err!(SqlErrorCode::Failed, "{}", msg)
+            }
+            _ => {
+                let msg = format!("sql error: {:?} info:{}", e, msg);
+                if cfg!(test) {
+                    println!("{}", msg);
+                } else {
+                    log::error!("{}", msg);
+                }
+                sql_err!(SqlErrorCode::Failed, "")
+            }
+        }
+    }
+}
 pub type SqlPool = crate::db_helper::SqlPool<sqlx::MySql, RawErrorToSqlError>;
 pub type SqlConnection = crate::db_helper::SqlConnection<sqlx::MySql, RawErrorToSqlError>;
 
